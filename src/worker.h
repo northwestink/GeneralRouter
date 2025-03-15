@@ -23,8 +23,12 @@ constexpr size_t BUFSIZE = 1024* 1024;
 // Represents a single client connection with read/write buffers
 class Connection {
 public:
-    std::vector<char> readBuffer;   // Buffer for incoming data
-    std::vector<char> writeBuffer;  // Buffer for outgoing data
+    Connection(size_t capacity) 
+    : readBuffer(capacity),
+     writeBuffer(capacity) {};
+    Message message;
+    CircularBuffer readBuffer; // Buffer for incoming data
+    CircularBuffer writeBuffer;  // Buffer for outgoing data
 };
 
 class WorkerThread {
@@ -68,47 +72,51 @@ private:
      * @param message Incoming FIX message
      * @param conn Connection to write response to
      */
-    void processLogon(const Message& message, Connection& conn) {
-        conn.writeBuffer.insert(conn.writeBuffer.end(), Message::BeginString.begin(), Message::BeginString.end());
-        conn.writeBuffer.insert(conn.writeBuffer.end(), message.beginString.begin(), message.beginString.end());
-        conn.writeBuffer.push_back(Message::SOH);
+    void processLogon(Connection& conn) {
+        Message &message = conn.message;
+        
+        // Prepare response
+        conn.writeBuffer.writeFromString(Message::BeginString);
+        conn.writeBuffer.writeFromString(message.beginString);
+        conn.writeBuffer.writeFromByte(Message::SOH);
 
-        conn.writeBuffer.insert(conn.writeBuffer.end(), Message::BodyLength.begin(), Message::BodyLength.end());
-        conn.writeBuffer.insert(conn.writeBuffer.end(), message.bodyLength.begin(), message.bodyLength.end());
-        conn.writeBuffer.push_back(Message::SOH);
+        // BodyLength
+        conn.writeBuffer.writeFromString(Message::BodyLength);
+        conn.writeBuffer.writeFromString(message.bodyLength);
+        conn.writeBuffer.writeFromByte(Message::SOH);
 
         // send Msgtype
-        conn.writeBuffer.insert(conn.writeBuffer.end(), Message::MsgType.begin(), Message::MsgType.end());
-        conn.writeBuffer.insert(conn.writeBuffer.end(), message.msgType.begin(), message.msgType.end());
-        conn.writeBuffer.push_back(Message::SOH);
+        conn.writeBuffer.writeFromString(Message::MsgType);
+        conn.writeBuffer.writeFromString(message.msgType);
+        conn.writeBuffer.writeFromByte(Message::SOH);
 
         // send SeqNumber
-        conn.writeBuffer.insert(conn.writeBuffer.end(), Message::SeqNumber.begin(), Message::SeqNumber.end());
-        conn.writeBuffer.insert(conn.writeBuffer.end(), message.seqNumber.begin(), message.seqNumber.end());
-        conn.writeBuffer.push_back(Message::SOH);
+        conn.writeBuffer.writeFromString(Message::SeqNumber);
+        conn.writeBuffer.writeFromString(message.seqNumber);
+        conn.writeBuffer.writeFromByte(Message::SOH);
 
         // send SenderCompID
-        conn.writeBuffer.insert(conn.writeBuffer.end(), Message::SenderCompID.begin(), Message::SenderCompID.end());
-        conn.writeBuffer.insert(conn.writeBuffer.end(), message.senderCompID.begin(), message.senderCompID.end());
-        conn.writeBuffer.push_back(Message::SOH);
+        conn.writeBuffer.writeFromString(Message::SenderCompID);
+        conn.writeBuffer.writeFromString(message.targetCompID);
+        conn.writeBuffer.writeFromByte(Message::SOH);
 
         // send TargetCompID
-        conn.writeBuffer.insert(conn.writeBuffer.end(), Message::TargetCompID.begin(), Message::TargetCompID.end());
-        conn.writeBuffer.insert(conn.writeBuffer.end(), message.targetCompID.begin(), message.targetCompID.end());
-        conn.writeBuffer.push_back(Message::SOH);
+        conn.writeBuffer.writeFromString(Message::TargetCompID);
+        conn.writeBuffer.writeFromString(message.senderCompID);
+        conn.writeBuffer.writeFromByte(Message::SOH);
 
         // send OtherFields
         for (const auto& field : message.otherFields) {
-            conn.writeBuffer.insert(conn.writeBuffer.end(), field.first.begin(), field.first.end());
-            conn.writeBuffer.push_back('=');
-            conn.writeBuffer.insert(conn.writeBuffer.end(), field.second.begin(), field.second.end());
-            conn.writeBuffer.push_back(Message::SOH);
+            conn.writeBuffer.writeFromString(field.first);
+            conn.writeBuffer.writeFromByte('=');
+            conn.writeBuffer.writeFromString(field.second);
+            conn.writeBuffer.writeFromByte(Message::SOH);
         }
 
-        // checksum
-        conn.writeBuffer.insert(conn.writeBuffer.end(), Message::CheckSum.begin(), Message::CheckSum.end());
-        conn.writeBuffer.insert(conn.writeBuffer.end(), message.checksum.begin(), message.checksum.end());
-        conn.writeBuffer.push_back(Message::SOH);   
+        // checkSum
+        conn.writeBuffer.writeFromString(Message::CheckSum);
+        conn.writeBuffer.writeFromString(message.checkSum);
+        conn.writeBuffer.writeFromByte(Message::SOH);   
     }
 
     /**
@@ -116,47 +124,40 @@ private:
      * @param message Parsed FIX message
      * @param conn Connection context
      */
-    void processData(const Message& message, Connection& conn) {
+    void processData(Connection& conn) {
         // Beging String
-        if("A" == message.msgType){
-            processLogon(message, conn);
+        if("A" == conn.message.msgType){
+            processLogon(conn);
         }
     }
 
     /**
      * Processes incoming FIX stream with zero-copy parsing
      * @param socketFd Socket file descriptor to read from
-     * @return true if a complete message was processed
+     * @return true if a complete message was processed, false otherwise
+     * @throws runtime_error on critical errors
      */
     bool processFixStream(int socketFd) {
-        // Add thread-local buffers for efficient processing
-        static thread_local std::map<int, CircularBuffer> buffers;
-        static thread_local std::map<int, Message> messages;
-        
-        // Initialize buffers if needed
-        auto bufferIt = buffers.find(socketFd);
-        if (bufferIt == buffers.end()) {
-            auto [it, inserted] = buffers.try_emplace(socketFd, BUFSIZE);
-            bufferIt = it;
+        auto connectionIt = connections.find(socketFd);
+        if (connectionIt == connections.end()) {
+            auto [it, inserted] = connections.try_emplace(socketFd, BUFSIZE);
+            if (!inserted) {
+                throw std::runtime_error("Failed to create connection");
+            }
+            connectionIt = it;
         }
         
-        if (messages.find(socketFd) == messages.end()) {
-            messages.emplace(socketFd, Message());
-        }
-        
-        CircularBuffer& buffer = bufferIt->second;
-        Message& message = messages[socketFd];
+        CircularBuffer& readBuffer = connectionIt->second.readBuffer;
+        Message& message = connectionIt->second.message;
 
         while (true) {
-            // Read socket data
-            ssize_t bytesRead = buffer.writeFromSocket(socketFd);
-            std::cout << "Read " << bytesRead << " bytes from socket." << std::endl;
+            // Read socket data with improved error handling
+            ssize_t bytesRead = readBuffer.writeFromSocket(socketFd);
             if (bytesRead < 0) {
-                std::cerr << "Error reading from socket: " << strerror(errno) << std::endl;
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    return false;
+                    return false; // No more data available
                 }
-                std::cerr << "read failed" << std::endl;
+                std::cerr << "Fatal socket error: " << strerror(errno) << std::endl;
                 closeConnection(socketFd);
                 return false;
             }
@@ -169,13 +170,13 @@ private:
             // Parse FIX messages
             while (true) {
                 std::cout << "Parsing FIX message..." << std::endl;
-                switch (Message::parseFixMessage(buffer, message)) {
+                switch (Message::parseFixMessage(readBuffer, message)) {
                     case ParseResult::FINISHED: {
                         // Debug logging for parsed message
                         std::cout << "Parsed FIX message:" << std::endl 
                         << "BeginString:" << message.beginString << std::endl
                         << "BodyLength:" << message.bodyLength << std::endl
-                        << "CheckSum:" << message.checksum << std::endl
+                        << "CheckSum:" << message.checkSum << std::endl
                         << "MsgType:" << message.msgType << std::endl
                         << "SenderCompID:" << message.senderCompID << std::endl
                         << "TargetCompID:" << message.targetCompID << std::endl
@@ -187,7 +188,8 @@ private:
                         }
 
                         // Process complete message
-                        processData(message, connections[socketFd]);
+                        processData(connectionIt->second);
+                        message.reset();
                         return true;
                     }
                     default:
@@ -252,8 +254,11 @@ public:
                     int newFd;
                     ssize_t bytesRead = read(pipeReadFd, &newFd, sizeof(newFd));
                     if (bytesRead == sizeof(newFd)) {
-                        Connection conn;
-                        connections[newFd] = conn;
+                        auto connectionIt = connections.find(newFd);
+                        if (connectionIt == connections.end()) {
+                            auto [it, inserted] = connections.try_emplace(newFd, BUFSIZE);
+                            connectionIt = it;
+                        }
                         epoll_event event;
                         event.data.fd = newFd;
                         event.events = EPOLLIN | EPOLLET;
@@ -268,7 +273,7 @@ public:
                 } else {
                     int fd = events[i].data.fd;
                     if (events[i].events & EPOLLIN) {
-                        Connection& conn = connections[fd];
+                        Connection& conn = connections.at(fd);
                         while (processFixStream(fd)) {}
                         if (!conn.writeBuffer.empty()) {
                             setEpollEvents(fd, EPOLLIN | EPOLLOUT);
@@ -277,11 +282,11 @@ public:
                         }
                     }
                     if (events[i].events & EPOLLOUT) {
-                        Connection& conn = connections[fd];
+                        Connection& conn = connections.at(fd);
                         while (!conn.writeBuffer.empty()) {
-                            ssize_t bytesWritten = write(fd, conn.writeBuffer.data(), conn.writeBuffer.size());
+                            ssize_t bytesWritten = conn.writeBuffer.readToSocket(fd);
                             if (bytesWritten > 0) {
-                                conn.writeBuffer.erase(conn.writeBuffer.begin(), conn.writeBuffer.begin() + bytesWritten);
+                                break;
                             } else if (bytesWritten == -1 && (errno == EAGAIN || EWOULDBLOCK)) {
                                 break;
                             } else {

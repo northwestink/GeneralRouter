@@ -63,9 +63,54 @@ public:
     /**
      * @brief Reads data from socket into buffer using zero-copy operations
      * @param socketFd The socket file descriptor to read from
-     * @return Number of bytes read, or -1 on error
+     * @return Number of bytes read, -1 on error, 0 on connection closed
+     * @throws runtime_error if buffer is corrupted
      */
     ssize_t writeFromSocket(int socketFd) {
+        if (!buffer_) {
+            throw std::runtime_error("Buffer not initialized");
+        }
+
+        size_t available = availableSpace();
+        if (available == 0) {
+            return -1; // Buffer full
+        }
+
+        // Calculate optimal write size
+        size_t writeSize = std::min(available, capacity_ - tail_);
+        ssize_t bytesRead = read(socketFd, buffer_ + tail_, writeSize);
+        
+        if (bytesRead > 0) {
+            tail_ = (tail_ + bytesRead) % capacity_;
+            full_ = (tail_ == head_);
+            
+            // Validate buffer state
+            if (tail_ >= capacity_ || head_ >= capacity_) {
+                throw std::runtime_error("Buffer index corruption detected");
+            }
+        }
+        
+        return bytesRead;
+    }
+
+    /**
+     * @brief Reads data from buffer into a string
+     * @param length Number of bytes to read
+     * @return A string containing the read data
+     * @throws None
+     */
+    ssize_t writeFromString(const std::string_view& data) {
+        return writeFromBytes(data.data(), data.size());
+    }
+
+    /**
+     * @brief Writes data from a byte array into the buffer
+     * @param data Pointer to the data to write
+     * @param length Number of bytes to write
+     * @return Number of bytes written, or -1 if buffer is full
+     * @throws None
+     */
+    ssize_t writeFromBytes(const char* data, size_t length) {
         size_t available = availableSpace();
         if (available <= 0) {
             std::cerr << "Buffer full (capacity=" << capacity_ 
@@ -76,18 +121,74 @@ public:
 
         // Calculate contiguous writable space
         size_t writeSize = std::min(available, capacity_ - tail_);
-        ssize_t bytesRead = read(socketFd, buffer_ + tail_, writeSize);
+        if (writeSize < length) {
+            std::cerr << "Data too large for buffer (data=" << length 
+                      << ", available=" << writeSize << ")" << std::endl;
+            length = writeSize;
+        }
+
+        std::copy(data, data + length, buffer_ + tail_);
+        tail_ = (tail_ + length) % capacity_;
+        full_ = (tail_ == head_);
+
+        std::cout << "Wrote " << length << " bytes into buffer" << std::endl;
+        return length;
+    }
+
+    /**
+     * @brief Writes a single byte into the buffer
+     * @param data The byte to write into the buffer
+     * @return Number of bytes written (1 on success, -1 if buffer is full)
+     * @throws None
+     */
+    ssize_t writeFromByte(char data) {
+        size_t available = availableSpace();
+        if (available <= 0) {
+            std::cerr << "Buffer full (capacity=" << capacity_ 
+                      << ", head=" << head_ 
+                      << ", tail=" << tail_ << ")" << std::endl;
+            return -1;
+        }
+
+        buffer_[tail_] = data;
+        tail_ = (tail_ + 1) % capacity_;
+        full_ = (tail_ == head_);
+
+        std::cout << "Wrote 1 byte into buffer" << std::endl;
+        return 1;
+    }
+
+
+    /**
+     * @brief Writes data from buffer to socket using zero-copy operations
+     * @param socketFd The socket file descriptor to write to
+     * @return Number of bytes written, or -1 on error
+     * @throws None
+     * @note This method automatically advances the read pointer (head_) on successful write
+     * @note If the write is partial, only the successfully written bytes are consumed
+     */
+    ssize_t readToSocket(int socketFd) {
+        size_t available = dataSize();
+        if (available <= 0) {
+            std::cerr << "Buffer empty, nothing to read" << std::endl;
+            return -1;
+        }
+
+        // Calculate contiguous readable space
+        size_t readSize = std::min(available, capacity_ - head_);
+        ssize_t bytesWritten = write(socketFd, buffer_ + head_, readSize);
         
-        if (bytesRead > 0) {
-            std::cout << "Read " << bytesRead << " bytes into buffer" << std::endl;
-            tail_ = (tail_ + bytesRead) % capacity_;
-            full_ = (tail_ == head_);
-        } else if (bytesRead < 0) {
-            std::cerr << "Socket read error: " << strerror(errno) << std::endl;
+        if (bytesWritten > 0) {
+            std::cout << "Wrote " << bytesWritten << " bytes to socket" << std::endl;
+            head_ = (head_ + bytesWritten) % capacity_;
+            full_ = false;
+        } else if (bytesWritten < 0) {
+            std::cerr << "Socket write error: " << strerror(errno) << std::endl;
         }
         
-        return bytesRead;
+        return bytesWritten;
     }
+
 
     /**
      * @brief Returns current amount of data in the buffer
@@ -97,6 +198,14 @@ public:
         if (full_) return capacity_;
         return (tail_ >= head_) ? (tail_ - head_) : (capacity_ - head_ + tail_);
     }
+
+    /**
+     * @brief Checks if the buffer is empty
+     * @return true if buffer is empty, false otherwise
+     */
+    bool empty() const {
+        return head_ == tail_;
+    };
 
     /**
      * @brief Gets a read-only view of the buffer data without copying

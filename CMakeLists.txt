@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.16)  # Changed for better C++20 support
 
 # Set project name and version
 project(GeneralRouter 
@@ -29,18 +29,31 @@ include_directories(
     ${PROJECT_SOURCE_DIR}/include
 )
 
-# Explicitly list source files instead of using GLOB
-set(SOURCES
-    src/main.cpp
-    # Add other source files here
-)
+# Check for format.cmake existence
+set(FORMAT_CMAKE "${CMAKE_SOURCE_DIR}/cmake/format.cmake")
+if(NOT EXISTS ${FORMAT_CMAKE})
+    message(WARNING "format.cmake not found at ${FORMAT_CMAKE}")
+else()
+    include(${FORMAT_CMAKE})
+endif()
 
-set(HEADERS
-    # Add header files here
+# Explicitly list source files instead of using GLOB
+# Use GLOB_RECURSE to find all source files
+file(GLOB_RECURSE SOURCES
+    "src/*.cpp"
+    "sample/*.cpp"
 )
 
 # Create executable
-add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
+add_executable(${PROJECT_NAME} ${SOURCES})
+
+# Enable auto-formatting
+enable_auto_format(${PROJECT_NAME})
+
+# Add test directory if it exists
+if(EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")
+    add_subdirectory(tests)
+endif()
 
 # Set output directories
 set_target_properties(${PROJECT_NAME}
@@ -58,4 +71,8 @@ install(TARGETS ${PROJECT_NAME}
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
+)
+
+install(DIRECTORY include/
+    DESTINATION include
 )

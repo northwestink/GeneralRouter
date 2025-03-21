@@ -55,6 +55,11 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt")
     add_subdirectory(tests)
 endif()
 
+# Add examples directory if it exists
+if(EXISTS "${CMAKE_SOURCE_DIR}/examples/CMakeLists.txt")
+    add_subdirectory(examples)
+endif()
+
 # Set output directories
 set_target_properties(${PROJECT_NAME}
     PROPERTIES

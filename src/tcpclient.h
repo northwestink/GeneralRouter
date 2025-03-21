@@ -1,129 +1,130 @@
 #pragma once
 
 // System includes
-#include <sys/epoll.h>    // For epoll functionality
-#include <sys/socket.h>   // For socket creation and manipulation
-#include <netinet/in.h>   // For internet address family
-#include <arpa/inet.h>    // For converting IP addresses
-#include <unistd.h>       // For close() function
-#include <fcntl.h>        // For file control options like non-blocking
+#include <arpa/inet.h>  // For converting IP addresses
+#include <fcntl.h>      // For file control options like non-blocking
+#include <netinet/in.h> // For internet address family
+#include <sys/epoll.h>  // For epoll functionality
+#include <sys/socket.h> // For socket creation and manipulation
+#include <unistd.h>     // For close() function
 
 // Standard library includes
-#include <memory>         // For smart pointers
-#include <string>         // For string manipulation
-#include <functional>     // For std::function
-#include <deque>          // For double-ended queue
-#include <mutex>          // For thread safety
-#include <array>          // For fixed-size array
-#include <thread>         // For thread support
+#include <array>      // For fixed-size array
+#include <deque>      // For double-ended queue
+#include <functional> // For std::function
+#include <memory>     // For smart pointers
+#include <mutex>      // For thread safety
+#include <string>     // For string manipulation
+#include <thread>     // For thread support
 
 /**
- * @brief TCP client implementation with non-blocking I/O and event-driven architecture
+ * @brief TCP client implementation with non-blocking I/O and event-driven
+ * architecture
  */
 class TCPClient {
 public:
-    /** Type alias for message handler callback function */
-    using MessageHandler = std::function<void(const std::string&)>;
-    
-    /** Type alias for connection status callback function */
-    using ConnectHandler = std::function<void(bool)>;
+  /** Type alias for message handler callback function */
+  using MessageHandler = std::function<void(const std::string &)>;
 
-    /** @brief Constructs a new TCP client instance */
-    TCPClient();
+  /** Type alias for connection status callback function */
+  using ConnectHandler = std::function<void(bool)>;
 
-    /**
-     * @brief Destroys the TCP client instance and releases resources
-     * 
-     * Performs cleanup of system resources:
-     * - Closes active TCP connection
-     * - Closes epoll file descriptor
-     * - Clears pending messages
-     */
-    ~TCPClient();
+  /** @brief Constructs a new TCP client instance */
+  TCPClient();
 
-    /**
-     * @brief Establishes TCP connection to specified endpoint
-     * @param host Server hostname or IP address
-     * @param port Server port number
-     * @param handler Callback for connection status
-     */
-    void connect(const std::string& host, uint16_t port, ConnectHandler handler);
+  /**
+   * @brief Destroys the TCP client instance and releases resources
+   *
+   * Performs cleanup of system resources:
+   * - Closes active TCP connection
+   * - Closes epoll file descriptor
+   * - Clears pending messages
+   */
+  ~TCPClient();
 
-    /** @brief Terminates the current TCP connection */
-    void disconnect();
+  /**
+   * @brief Establishes TCP connection to specified endpoint
+   * @param host Server hostname or IP address
+   * @param port Server port number
+   * @param handler Callback for connection status
+   */
+  void connect(const std::string &host, uint16_t port, ConnectHandler handler);
 
-    /**
-     * @brief Queues a message for asynchronous transmission
-     * @param message Data to be sent
-     */
-    void asyncSend(const std::string& message);
+  /** @brief Terminates the current TCP connection */
+  void disconnect();
 
-    /**
-     * @brief Sets callback for handling incoming messages
-     * @param handler Function to process received messages
-     */
-    void setMessageHandler(MessageHandler handler);
+  /**
+   * @brief Queues a message for asynchronous transmission
+   * @param message Data to be sent
+   */
+  void asyncSend(const std::string &message);
 
-    /** @brief Returns current connection status */
-    bool isConnected() const;
+  /**
+   * @brief Sets callback for handling incoming messages
+   * @param handler Function to process received messages
+   */
+  void setMessageHandler(MessageHandler handler);
 
-    /** @brief Processes pending socket events */
-    void poll();
+  /** @brief Returns current connection status */
+  bool isConnected() const;
 
-    /** @brief Starts the message processing threads */
-    void startThreads();
-    
-    /** @brief Stops the message processing threads */
-    void stopThreads();
+  /** @brief Processes pending socket events */
+  void poll();
+
+  /** @brief Starts the message processing threads */
+  void startThreads();
+
+  /** @brief Stops the message processing threads */
+  void stopThreads();
 
 private:
-    /** @brief Sets up epoll instance for event monitoring */
-    void initEpoll();
-    
-    /**
-     * @brief Configures socket for non-blocking operation
-     * @param fd File descriptor to modify
-     */
-    void setNonBlocking(int fd);
-    
-    /** @brief Processes events from epoll */
-    void handleEvents();
-    
-    /** @brief Handles incoming data from socket */
-    void doRead();
-    
-    /** @brief Processes outgoing data queue */
-    void doWrite();
+  /** @brief Sets up epoll instance for event monitoring */
+  void initEpoll();
 
-    /** @brief Thread function for receiving messages */
-    void receiveLoop();
-    
-    /** @brief Thread function for sending messages */
-    void sendLoop();
+  /**
+   * @brief Configures socket for non-blocking operation
+   * @param fd File descriptor to modify
+   */
+  void setNonBlocking(int fd);
 
-    // File descriptors and state flags
-    int epoll_fd_{-1};           ///< Epoll instance descriptor
-    int sock_fd_{-1};            ///< Socket descriptor
-    bool connected_{false};       ///< Connection state
-    bool writing_{false};         ///< Write operation state
+  /** @brief Processes events from epoll */
+  void handleEvents();
 
-    // Message queue management
-    std::deque<std::string> write_queue_;    ///< Pending messages
-    std::mutex write_mutex_;                  ///< Queue synchronization
+  /** @brief Handles incoming data from socket */
+  void doRead();
 
-    // Buffer management
-    static constexpr size_t max_buffer_size = 8192;
-    std::array<char, max_buffer_size> read_buffer_;  ///< Receive buffer
+  /** @brief Processes outgoing data queue */
+  void doWrite();
 
-    // Event handling
-    MessageHandler message_handler_;          ///< Message processing callback
-    ConnectHandler connect_handler_;          ///< Connection status callback
-    struct epoll_event current_event_;        ///< Current event being processed
-    std::array<struct epoll_event, 1> events_; ///< Event buffer
+  /** @brief Thread function for receiving messages */
+  void receiveLoop();
 
-    // Thread management
-    std::thread receive_thread_;    ///< Thread for receiving messages
-    std::thread send_thread_;       ///< Thread for sending messages
-    bool should_stop_{false};       ///< Thread control flag
-    std::mutex stop_mutex_;         ///< Mutex for thread control
+  /** @brief Thread function for sending messages */
+  void sendLoop();
+
+  // File descriptors and state flags
+  int epoll_fd_{-1};      ///< Epoll instance descriptor
+  int sock_fd_{-1};       ///< Socket descriptor
+  bool connected_{false}; ///< Connection state
+  bool writing_{false};   ///< Write operation state
+
+  // Message queue management
+  std::deque<std::string> write_queue_; ///< Pending messages
+  std::mutex write_mutex_;              ///< Queue synchronization
+
+  // Buffer management
+  static constexpr size_t max_buffer_size = 8192;
+  std::array<char, max_buffer_size> read_buffer_; ///< Receive buffer
+
+  // Event handling
+  MessageHandler message_handler_;           ///< Message processing callback
+  ConnectHandler connect_handler_;           ///< Connection status callback
+  struct epoll_event current_event_;         ///< Current event being processed
+  std::array<struct epoll_event, 1> events_; ///< Event buffer
+
+  // Thread management
+  std::thread receive_thread_; ///< Thread for receiving messages
+  std::thread send_thread_;    ///< Thread for sending messages
+  bool should_stop_{false};    ///< Thread control flag
+  std::mutex stop_mutex_;      ///< Mutex for thread control
 };
